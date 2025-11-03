@@ -14,11 +14,9 @@ class Receiver
 public:
   Receiver(boost::asio::io_context& io_context,tcp::socket& socket):
   io_context_(io_context),socket_(socket) {
-    std::cerr<<"Receiver被创立"<<std::endl;
   }
 
   void start(){
-    std::cerr<<"receive函数开始执行"<<std::endl;
     boost::asio::async_read_until(socket_,buffer_,'\n',[&,self=shared_from_this()](const boost::system::error_code& error,std::size_t bytes_transferred){
       // 回调函数体
       std::istream is(&buffer_);
@@ -111,8 +109,6 @@ private:
   }
 
   void handler(){
-    std::cout<<"连接建立成功"<<std::endl;
-    
     // 由于类不能在构造函数中创建shared_from_this指针，所以需要start函数
     std::shared_ptr<Receiver> receiver(new Receiver(io_context_,socket_));
     receiver->start();

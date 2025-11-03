@@ -29,11 +29,9 @@ public:
   // async_accept的回调函数需要调用该函数，然后该连接就会自动地接受和发送消息到对应目标
   void start(){
     // 收到信息：检查目的地，转发信息
-    std::cerr<<"开始等待消息"<<std::endl;
     boost::asio::async_read_until(socket_,buffer_,'\n',[self=shared_from_this()](const boost::system::error_code& error,
     std::size_t bytes_transferred){
       if(!error){
-        std::cerr<<"tcp_connection开始工作"<<std::endl;
         self->handler(bytes_transferred);
       } 
       else
@@ -77,13 +75,11 @@ private:
     std::string line;
     std::getline(is,line);
     if(line[0]=='L'){
-      std::cout << "收到消息：L加客户名" << std::endl;
       forward_table_[line[1]]=shared_from_this();
     }
     else{
       if(forward_table_.find(line[1])!=forward_table_.end()){
         boost::asio::async_write(forward_table_.find(line[1])->second->socket(),boost::asio::buffer(line+'\n'),[this](const boost::system::error_code& error,std::size_t bytes_transferred){
-          std::cerr<<"消息已经被成功发送"<<std::endl;
         });
       }
       else{
@@ -114,7 +110,6 @@ private:
     acceptor_.async_accept(new_connection->socket(),
     [=](const boost::system::error_code& error){
       if(!error){
-        std::cout << "server启动tcp_connection" << std::endl;
         new_connection->start();
         // 让对应的socket启动并开始工作，然后继续接受之后的连接请求
         start_accept();
@@ -133,7 +128,6 @@ private:
 int main(){
   boost::asio::io_context io_context;
   tcp_server server(io_context);
-  std::cout << "run之前" << std::endl;
   io_context.run();
   return 0;
 }
