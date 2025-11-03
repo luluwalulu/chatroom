@@ -6,10 +6,6 @@
 #include <memory>
 
 using boost::asio::ip::tcp;
-// cin和cout(所有标准iostream对象)共享一把锁
-// 为了避免在等待输入数据（等待cin时），无法接受数据（无法cout）的死锁问题
-// 在这里我们异步地管理键盘输入（键盘输入完成才触发事件，而不是一直阻塞在这里）
-
 
 // Receiver的作用就是异步地读取数据并将其打印到控制台
 class Receiver
@@ -29,7 +25,7 @@ public:
       std::string line;
       std::getline(is,line);
       if(!error){
-        std::cout<<"收到消息"<<line<<std::endl;
+        std::cout<<"收到消息："<<line<<std::endl;
         self->start();
       }
       else std::cerr<<"读取失败"<<std::endl;
@@ -48,42 +44,38 @@ class Sender
 {
 public:
   Sender(boost::asio::io_context& io,tcp::socket& socket,std::string client_name)
-    : timer_(io,boost::asio::chrono::seconds(1)),socket_(socket),
-      count_(0),buffer_{},client_name_(client_name)
+    : input(io,::dup(STDIN_FILENO)),socket_(socket),
+      count_(0),client_name_(client_name)
   {
-  }
-
-  void start(){
     if(client_name_.size()!=1){
       std::cerr<<"名字长度必须为1！"<<std::endl;
     } 
-    timer_.async_wait( [self=shared_from_this()](const boost::system::error_code& /*e*/) {self->send();} );
   }
-private:
 
-  void send(){
-    if(count_<5){
-      // 隐含的问题，一旦client1到服务器的连接建立就发送信息，此时client2和服务器的连接可能尚未建立，所以引入下面的初始身份验证。同时，为了server的转发表能够顺利建立客户名和socket之间的映射
-      // 所以定义一个登录协议，连接建立时的第一条消息发送"LOGIN ALICE"
-      // 之后的消息发送"SENDTOTOM  MESSAGE"
-      // 前六个字母是行为，后五个字母是客户名，再后面是消息
-
-      // std::cerr<<"开始执行send，此时count_="<<count_<<std::endl;
-      if(count_==0){
-        buffer_.assign("L"+client_name_+'\n');
+  void start(){
+    boost::asio::async_read_until(input,input_buffer_,'\n',[self=shared_from_this()](const boost::system::error_code& error,std::size_t len){
+      if(!error){
+        self->send(len);
       }
       else{
-        buffer_.assign("S"+client_name_+"你好你好，我系"+client_name_+'\n');
+        std::cerr<<"从键盘读取消息发生错误"<<std::endl;
       }
-      boost::asio::async_write(socket_,boost::asio::buffer(buffer_),[self=shared_from_this()](const boost::system::error_code& error,std::size_t bytes_transferred){
-          if(!error) self->write_handler();
-          else std::cerr<<"读取错误"<<std::endl;
-        });
-      ++count_;      
-      timer_.expires_at(timer_.expiry()+boost::asio::chrono::seconds(1));
-      // 这样套娃shared_from_this是不是有点不对劲啊
-      timer_.async_wait([self=shared_from_this()](const boost::system::error_code& /*e*/) {self->send();} );
-    }
+    });
+  }
+private:
+  void send(std::size_t len){
+    std::istream is(&input_buffer_);
+    std::string line;
+    std::getline(is,line);
+    
+    boost::asio::async_write(socket_,boost::asio::buffer(line+'\n'),[self=shared_from_this()](const boost::system::error_code& error,std::size_t len){
+      if(!error){
+        self->start();
+      }
+      else{
+        std::cerr<<"发送消息失败"<<std::endl;
+      }
+    });
   }
 
   void write_handler(){
@@ -91,10 +83,12 @@ private:
   }
 
 private:
-  boost::asio::steady_timer timer_;
+  // 将标准输入包装成Asio的I/O对象
+  boost::asio::posix::stream_descriptor input;
+  // 为键盘输入准备一个“智能”的、可增长的缓冲区
+  boost::asio::streambuf input_buffer_{};
   int count_;
   tcp::socket& socket_;
-  std::string buffer_;
   std::string client_name_;
 };
 
@@ -117,11 +111,9 @@ private:
   }
 
   void handler(){
-    // 一旦连接建立，就应该开启async_write和async_read
-    // 其中async_write应该被std::cin阻塞，一旦从键盘上读取到数据，就启动async_write发送消息
-    // 而async_read不应该被std::cin阻塞
     std::cout<<"连接建立成功"<<std::endl;
     
+    // 由于类不能在构造函数中创建shared_from_this指针，所以需要start函数
     std::shared_ptr<Receiver> receiver(new Receiver(io_context_,socket_));
     receiver->start();
     std::shared_ptr<Sender> sender(new Sender(io_context_,socket_,client_name_));
@@ -150,13 +142,25 @@ int main(int argc,char* argv[]){
   }
   return 0;
 }
+// 为了避免在程序中处理IP地址相关问题，我们在server的转发表中维护的是客户名和对应socket之间的映射。由于消息到达时，客户端智能由socket查找对应IP地址，而无法对客户名进行处理
+// 所以我们引入协议：发送的消息以如果是“L+客户名+'\n'”，则server需要将相应信息存储到表中。如果是“S+客户名+消息+'\n'”，则需将消息转发到对应客户上去
+// 客户名只允许有一个字母，发送的消息的末尾必须有'\n'
 
 // 异步地执行任务要避免的一点是，由于类不会阻塞在回调函数那里，所以类可能会被直接销毁。就比如说这里，在Client的handler函数中，
 // Sender类和Receiver类如果不用shared_ptr和shared_from_this处理好的话就会出问题
-
+// 所以我们用shared_ptr创建sender和receiver
 // 总结一下这里的sender和receiver：
   // 1.用shared_ptr创建。
   // 2.继承自enabled_shared_from_this类
   // 3.在构造函数中禁止使用shared_from_this()函数，构造函数结束后，基类中的弱指针才指向了正确的位置
   // 4.所以不能依靠类自身的构造函数来完成启动，在类外通过client类来完成启动start()函数
   // 5.start函数的回调函数需要再次调用start函数
+
+// 已经实现client定时发送消息，server发送回声消息的效果
+// 现在想要实现client a和client b之间通信的效果
+// 需要做出以下修改：
+  // 1.对于client，sender类中async_write()不再是定时由steady_timer来进行触发，而是由一个异步的std::cin来实现
+  // 注：cin和cout(所有标准iostream对象)共享一把锁
+  // 为了避免在等待输入数据（等待cin时），无法接受数据（无法cout）的死锁问题
+  // 在这里我们异步地管理键盘输入（键盘输入完成才触发事件，而不是一直阻塞在这里）
+  // 2.当client发送消息时，等待键盘输入然后async_write，再次进入下一次等待键盘输入
